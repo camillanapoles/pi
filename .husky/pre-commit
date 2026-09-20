@@ -1,4 +1,11 @@
-#!/bin/sh
+#!/data/data/com.termux/files/usr/bin/sh
+
+# Termux/Android port of the upstream .husky/pre-commit.
+# Upstream cannot exec on this device: npm/npx and `bun run` shebangs are
+# broken on Android, TS7 `tsgo` ships no android-arm64 binary, /tmp is not
+# writable, and @biomejs/biome has no prebuilt android binary. Same checks,
+# direct recipes. On merge conflicts THIS file wins (environment governance).
+# Upstream original: `git show upstream/main:.husky/pre-commit`
 
 # Get list of staged files before running check
 STAGED_FILES=$(git diff --cached --name-only)
@@ -8,11 +15,28 @@ if [ $? -ne 0 ]; then
   exit 1
 fi
 
-# Run the check script (formatting, linting, and type checking)
-echo "Running formatting, linting, and type checking..."
-npm run check
+# SKIPPED on-device (documented, not silent): biome has no android prebuilt
+# binary. Formatting/lint gate still runs on linux CI runners.
+echo "SKIP: biome (no android binary) - formatting/lint gate runs in CI only"
+
+echo "Running dependency checks..."
+node scripts/check-pinned-deps.mjs && \
+	node scripts/check-runtime-deps.mjs && \
+	node scripts/check-ts-relative-imports.mjs && \
+node scripts/check-entry-graphs.mjs
 if [ $? -ne 0 ]; then
-  echo "❌ Checks failed. Please fix the errors before committing."
+  echo "Dependency checks failed."
+  exit 1
+fi
+
+# SKIPPED on-device (documented): these two checks read the root npm
+# package-lock.json, removed by this fork (bun governance).
+echo "SKIP: shrinkwrap + install-lock (npm package-lock only) - run in CI"
+
+echo "Running typecheck (local tsc 5.9, ES2024 override; tsgo unavailable on android)..."
+NODE_OPTIONS="--max-old-space-size=2048" node node_modules/typescript/bin/tsc --noEmit --target ES2024 --lib ES2024
+if [ $? -ne 0 ]; then
+  echo "Typecheck failed. Fix errors before committing."
   exit 1
 fi
 
@@ -28,18 +52,18 @@ done
 
 if [ $RUN_BROWSER_SMOKE -eq 1 ]; then
   echo "Running browser smoke check..."
-  npm run check:browser-smoke
+  TMPDIR="$PREFIX/tmp" node scripts/check-browser-smoke.mjs
   if [ $? -ne 0 ]; then
-    echo "❌ Browser smoke check failed."
+    echo "Browser smoke check failed."
     exit 1
   fi
 fi
 
-# Restage files that were previously staged and may have been modified by formatting
+# Restage files that were previously staged and may have been modified
 for file in $STAGED_FILES; do
   if [ -f "$file" ]; then
     git add "$file"
   fi
 done
 
-echo "✅ All pre-commit checks passed!"
+echo "All pre-commit checks passed!"
